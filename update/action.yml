@@ -1,0 +1,88 @@
+name: nix-update-report update
+description: >-
+  Update flake.lock and report the version and CVE changes on each affected
+  target. See README.md, "GitHub Actions".
+
+inputs:
+  inputs:
+    description: Flake inputs to update, separated by spaces (default all)
+    default: ""
+  targets:
+    description: JSON list of targets (default all)
+    default: ""
+  cves:
+    description: Whether the PR body reports CVEs, true or false
+    default: "true"
+  normalization:
+    description: Path to a normalization file
+    default: ""
+  whitelist:
+    description: vulnix whitelist, used if it exists
+    default: vulnix-whitelist.toml
+  nvd-mirror:
+    description: NVD feed mirror
+    default: https://nvd-mirror.fsn1.your-objectstorage.com/
+
+outputs:
+  affected:
+    description: JSON list of affected targets
+    value: ${{ steps.report.outputs.affected }}
+  body-path:
+    description: Path to the PR body; empty if no target is affected
+    value: ${{ steps.report.outputs.body-path }}
+
+runs:
+  using: composite
+  steps:
+    - id: report
+      shell: bash
+      env:
+        INPUTS: ${{ inputs.inputs }}
+        TARGETS: ${{ inputs.targets }}
+        CVES: ${{ inputs.cves }}
+        NORMALIZATION: ${{ inputs.normalization }}
+        WHITELIST: ${{ inputs.whitelist }}
+        NVD_MIRROR: ${{ inputs.nvd-mirror }}
+      run: |
+        set -euo pipefail
+        root=$(cd "$GITHUB_ACTION_PATH/.." && pwd)
+        scripts="$root/scripts"
+        work="$RUNNER_TEMP/nix-update-report"
+        mkdir -p "$work"
+
+        case $CVES in
+          true|false) ;;
+          *) echo "::error::cves must be true or false, not '$CVES'"; exit 1 ;;
+        esac
+
+        evaluate=("$scripts/normalized-derivations")
+        if [ -n "$NORMALIZATION" ]; then
+          evaluate+=(--normalization "$NORMALIZATION")
+        fi
+        targets=()
+        if [ -n "$TARGETS" ]; then
+          mapfile -t targets < <(jq -r '.[]' <<< "$TARGETS")
+        fi
+
+        "${evaluate[@]}" "${targets[@]}" > "$work/before.json"
+        # shellcheck disable=SC2086 # INPUTS is a space-separated list
+        nix flake update $INPUTS 2>&1 | tee "$work/update.log"
+        "${evaluate[@]}" "${targets[@]}" > "$work/after.json"
+
+        affected=$("$scripts/update_report.py" affected "$work/before.json" "$work/after.json")
+        echo "Affected: $affected"
+        echo "affected=$affected" >> "$GITHUB_OUTPUT"
+        if [ "$affected" = "[]" ]; then
+          echo "body-path=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        options=(--log "$work/update.log" --whitelist "$WHITELIST" --mirror "$NVD_MIRROR")
+        if [ "$CVES" = true ]; then
+          PATH="$(nix build --no-link --print-out-paths "path:$root#vulnix^out")/bin:$PATH"
+        else
+          options+=(--no-cves)
+        fi
+        "$scripts/update_report.py" body "${options[@]}" \
+          "$work/before.json" "$work/after.json" > "$work/body.md"
+        echo "body-path=$work/body.md" >> "$GITHUB_OUTPUT"

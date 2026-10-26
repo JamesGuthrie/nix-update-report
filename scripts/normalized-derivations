@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Prints the normalized derivations of the flake's machines and dev shells as a
+# JSON object, e.g. {"router": "/nix/store/...-nixos-system-router-26.05.drv"}.
+# See README.md, "Comparing targets".
+#
+# Usage: normalized-derivations [--flake REF] [--normalization FILE] [--list] [TARGET...]
+#
+#   --flake REF           the flake to evaluate (default: the current
+#                         directory, including uncommitted changes)
+#   --normalization FILE  extra normalization, see README.md, "Normalization
+#                         file"
+#   --list                print the names of the targets instead of their
+#                         derivations
+#   TARGET                a machine, or dev-shell-<system> (default: all)
+set -euo pipefail
+
+flake=$PWD
+normalization=null
+list=false
+while [ $# -gt 0 ]; do
+  case $1 in
+    --flake) flake=$2; shift 2 ;;
+    --normalization) normalization="(/. + \"$(realpath "$2")\")"; shift 2 ;;
+    --list) list=true; shift ;;
+    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+
+targets=null
+if [ $# -gt 0 ]; then
+  targets="builtins.fromJSON ''$(jq -cn '$ARGS.positional' --args "$@")''"
+fi
+
+normalized="$(cd "$(dirname "$0")" && pwd)/normalized.nix"
+expr="import $normalized {
+  flake = builtins.getFlake \"$flake\";
+  targets = $targets;
+  normalization = $normalization;
+}"
+if $list; then
+  expr="builtins.attrNames ($expr)"
+fi
+nix eval --impure --json --expr "$expr"
