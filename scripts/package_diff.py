@@ -111,7 +111,10 @@ BUILD_ONLY_ATTRS = frozenset({
     "stdenv",
 })
 
-STORE_PATH = re.compile(r"[0-9a-df-np-sv-z]{32}-[^/\"'\s:]+")
+# A store path's name has only the characters Nix allows in it, so a match
+# ends where the surrounding text continues, e.g. at the ";" in
+# `if /nix/store/...-x; then` or the "<" in `<string>/nix/store/...-x</string>`.
+STORE_PATH = re.compile(r"[0-9a-df-np-sv-z]{32}-[A-Za-z0-9+\-._?=]+")
 
 # A store path at the start of a line of `buildCommand` is a program the build
 # runs, e.g. the perl that runs buildEnv's builder.pl, not a reference the

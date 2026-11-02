@@ -183,6 +183,28 @@ class RuntimeClosureTest(unittest.TestCase):
 
         self.assertEqual(closure, {g.out(runner)})
 
+    def test_mentions_end_at_characters_not_allowed_in_store_paths(self) -> None:
+        for template in ["if ! /nix/store/{}; then", "<string>exec /nix/store/{}</string>",
+                         "$(/nix/store/{})", "'/nix/store/{}'"]:
+            with self.subTest(template):
+                g = Graph()
+                script = g.add("prepare-vm")
+                activate = g.add("activate", inputs=[script],
+                                 env={"text": template.format(g.out(script))})
+
+                closure = pd.runtime_closure(g.drvs, g.out(activate), lookup_from({}))
+
+                self.assertEqual(closure, {g.out(activate), g.out(script)})
+
+    def test_names_with_punctuation_allowed_in_store_paths(self) -> None:
+        g = Graph()
+        nix = g.add("nix-2.34.9+1_rc=x?")
+        conf = g.add("nix.conf", inputs=[nix], env={"text": f"/nix/store/{g.out(nix)}/bin/nix"})
+
+        closure = pd.runtime_closure(g.drvs, g.out(conf), lookup_from({}))
+
+        self.assertEqual(closure, {g.out(conf), g.out(nix)})
+
     def test_walk_returns_to_cache_references_below_uncached_paths(self) -> None:
         g = Graph()
         glibc = g.add("glibc-2.42")
