@@ -47,7 +47,7 @@ Python:
 
 1. `package_diff.py`, `cves.py` and `cve_issue.py`: unit tests for
    parsing, comparison and rendering. `cve_issue.py` reads reports with
-   `cves.py`'s parser, which reads `cves.py open`'s output back to the
+   `cves.py`'s parser, which reads `cves.py open --json`'s output back to the
    same report and rejects a malformed one.
 2. `update_report.py affected`: identical files give `[]`; a changed
    target is listed; files with different targets fail and name the

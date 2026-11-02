@@ -175,6 +175,21 @@ class TargetReportTest(unittest.TestCase):
         self.assertEqual(cves.target_report_json(r),
                          {"findings": [], "suppressed": [], "nested": {}})
 
+    def test_text_lists_nested_findings_beside_the_host_by_score(self) -> None:
+        r = cves.TargetReport(Report([finding(B), finding(C, "vim", "9.2")], []),
+                              {VM: Report([finding(A, "openssh", "10.3p1")], [])})
+
+        self.assertEqual(cves.target_report_text(tg.Target("myhost"), r), "\n".join([
+            "myhost/vm  critical  9.8  openssh  10.3p1  CVE-2026-0001",
+            "myhost     medium    5.5  curl     8.20.0  CVE-2026-0002",
+            "myhost     unscored  -    vim      9.2     CVE-2026-0003",
+        ]))
+
+    def test_text_without_findings(self) -> None:
+        r = cves.TargetReport(Report([], [B]), {VM: Report([], [])})
+
+        self.assertEqual(cves.target_report_text(tg.Target("myhost"), r), "No open CVEs.")
+
     def test_json_parses_back_to_the_report(self) -> None:
         r = cves.TargetReport(Report([finding(A), finding(C)], [B]),
                               {VM: Report([finding(B, "openssh")], [])})

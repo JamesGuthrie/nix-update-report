@@ -2,13 +2,18 @@
 """Find the CVEs affecting a system, or the CVEs an update resolves.
 
 Usage:
-  cves.py [OPTIONS] open DERIVATIONS_JSON TARGET
+  cves.py [OPTIONS] open [--json] DERIVATIONS_JSON TARGET
   cves.py [OPTIONS] compare OLD_DRV NEW_DRV
 
 `open` prints the CVEs affecting the runtime packages of TARGET, a key of
 DERIVATIONS_JSON, which is an output of `normalized-derivations`. Each nested
-system of the target gets a report of its own, and its packages are not in
-the target's:
+system of the target is reported on its own, and its packages are not in the
+target's. It prints one line per CVE, highest score first:
+
+    myhost     critical  9.8  brotli  1.2.0  CVE-2026-111497
+    myhost/vm  high      7.5  curl    8.22   CVE-2026-0002
+
+With --json, it prints
 
     {"findings": [FINDING, ...], "suppressed": ["CVE-...", ...],
      "nested": {"<label>": {"findings": [...], "suppressed": [...]}}}
@@ -323,7 +328,7 @@ def target_report_json(r: TargetReport) -> dict[str, object]:
 
 
 def parse_target_report(text: str) -> TargetReport:
-    """Parse the output of `cves.py open`; raise ValueError if malformed."""
+    """Parse the output of `cves.py open --json`; raise ValueError if malformed."""
     value: pd.Json = json.loads(text)
     nested = value.get("nested") if isinstance(value, dict) else None
     if not isinstance(nested, dict):
@@ -362,6 +367,21 @@ def parse_finding(value: pd.Json) -> Finding:
                    None if score is None else Score(float(score)), description)
 
 
+def target_report_text(target: tg.Target, r: TargetReport) -> str:
+    """One line per finding, highest score first. The first column names the
+    target, or the nested system as <target>/<label>."""
+    rows = [(str(target), f) for f in r.host.findings] + [
+        (f"{target}/{label}", f) for label, n in sorted(r.nested.items()) for f in n.findings]
+    rows.sort(key=lambda row: -(row[1].score or 0))
+    cells = [[system, f.severity.value, "-" if f.score is None else str(f.score),
+              f.pname, f.version, f.cve] for system, f in rows]
+    if not cells:
+        return "No open CVEs."
+    widths = [max(len(row[i]) for row in cells) for i in range(len(cells[0]) - 1)]
+    return "\n".join("  ".join([*(c.ljust(w) for c, w in zip(row, widths)), row[-1]])
+                     for row in cells)
+
+
 def open_target(derivations_path: str, target: tg.Target,
                 options: VulnixOptions) -> Union[TargetReport, str]:
     """The target's report, or an error message."""
@@ -389,6 +409,7 @@ def main() -> None:
     add_vulnix_arguments(parser)
     sub = parser.add_subparsers(dest="command", required=True)
     open_parser = sub.add_parser("open")
+    open_parser.add_argument("--json", action="store_true", help="print JSON")
     open_parser.add_argument("derivations", help="output of normalized-derivations")
     open_parser.add_argument("target")
     cmp = sub.add_parser("compare")
@@ -398,10 +419,12 @@ def main() -> None:
 
     options = vulnix_options(args)
     if args.command == "open":
-        result = open_target(args.derivations, tg.Target(args.target), options)
+        target = tg.Target(args.target)
+        result = open_target(args.derivations, target, options)
         if isinstance(result, str):
             sys.exit(result)
-        print(json.dumps(target_report_json(result)))
+        print(json.dumps(target_report_json(result)) if args.json
+              else target_report_text(target, result))
     else:
         print(json.dumps(comparison_json(compare_systems(
             load_system(args.old), load_system(args.new), options))))

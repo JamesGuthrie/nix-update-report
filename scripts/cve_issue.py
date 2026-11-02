@@ -3,7 +3,7 @@
 
 Usage: cve_issue.py REPORTS_DIR PREVIOUS_BODY HEADER BODY_OUT ALERT_OUT
 
-REPORTS_DIR holds one `cves.py open` report per target, named
+REPORTS_DIR holds one `cves.py open --json` report per target, named
 <target>.json. A target's nested systems are listed as targets of their own,
 named <target>/<label>. PREVIOUS_BODY is the issue's current body (empty if there is
 none); its hidden state lists the critical and high CVEs reported before.

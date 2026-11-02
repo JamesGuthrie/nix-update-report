@@ -320,8 +320,8 @@ packages whose store path changed without a version change. Without
 `--json`, it prints a table.
 
 ```
-cves.py [--mirror URL] [--whitelist FILE] [--cache-dir DIR] open DERIVATIONS_JSON TARGET
-  -> {"findings": [FINDING...], "suppressed": [CVE...],
+cves.py [--mirror URL] [--whitelist FILE] [--cache-dir DIR] open [--json] DERIVATIONS_JSON TARGET
+  -> with --json: {"findings": [FINDING...], "suppressed": [CVE...],
       "nested": {"<label>": {"findings": [FINDING...], "suppressed": [CVE...]}}}
 cves.py [...] compare OLD_DRV NEW_DRV
   -> {"resolved": [FINDING + {"sources": ["nvd"|"patch"]}], "introduced": [FINDING...]}
@@ -330,10 +330,12 @@ FINDING = {"cve", "package", "version", "score": float|null, "severity", "descri
 ```
 
 `open` lists the open CVEs of `TARGET`. `DERIVATIONS_JSON` is an output
-of `normalized-derivations` that includes `TARGET`. `findings` holds the
-CVEs in the target's own packages, and `nested` holds those of each of its
-[nested systems](#nested-systems), by label. `compare` lists the CVEs resolved and introduced between two
-derivations. `suppressed` lists the CVEs the whitelist left out. Without
+of `normalized-derivations` that includes `TARGET`. It prints one line per
+CVE, highest score first, naming the target or the
+[nested system](#nested-systems) as `<target>/<label>`. With `--json`,
+`findings` holds the CVEs in the target's own packages, and `nested` holds
+those of each nested system, by label. `compare` lists the CVEs resolved
+and introduced between two derivations. `suppressed` lists the CVEs the whitelist left out. Without
 `--cache-dir`, vulnix uses its default cache directory.
 
 ```
@@ -363,7 +365,7 @@ cve_issue.py REPORTS_DIR PREVIOUS_BODY HEADER BODY_OUT ALERT_OUT
 
 Writes the [CVE report issue](#cve-report-issue) body to `BODY_OUT`, and
 the comment about new critical or high CVEs to `ALERT_OUT` (empty if
-there are none). `REPORTS_DIR` holds one `cves.py open` output per
+there are none). `REPORTS_DIR` holds one `cves.py open --json` output per
 target, named `<target>.json`. Nested systems get their own rows and
 sections, named `<target>/<label>`. `PREVIOUS_BODY` is the issue's current
 body, or an empty file.
