@@ -161,6 +161,28 @@ class RuntimeClosureTest(unittest.TestCase):
 
         self.assertEqual(closure, {g.out(etc), g.out(wallpaper)})
 
+    def test_reference_constraints_are_not_followed(self) -> None:
+        for attr in ["allowedReferences", "allowedRequisites",
+                     "disallowedReferences", "disallowedRequisites"]:
+            with self.subTest(attr):
+                g = Graph()
+                go = g.add("go-1.26.4")
+                runner = g.add("runner-1.0", inputs=[go], env={attr: f"/nix/store/{g.out(go)}"})
+
+                closure = pd.runtime_closure(g.drvs, g.out(runner), lookup_from({}))
+
+                self.assertEqual(closure, {g.out(runner)})
+
+    def test_output_checks_are_not_followed(self) -> None:
+        g = Graph()
+        go = g.add("go-1.26.4")
+        runner = g.add("runner-1.0", inputs=[go], structured={
+            "outputChecks": {"out": {"disallowedReferences": [f"/nix/store/{g.out(go)}"]}}})
+
+        closure = pd.runtime_closure(g.drvs, g.out(runner), lookup_from({}))
+
+        self.assertEqual(closure, {g.out(runner)})
+
     def test_walk_returns_to_cache_references_below_uncached_paths(self) -> None:
         g = Graph()
         glibc = g.add("glibc-2.42")

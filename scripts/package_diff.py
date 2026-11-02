@@ -86,20 +86,27 @@ class Change(NamedTuple):
 
 CACHE = "https://cache.nixos.org"
 
-# Attributes that only carry build machinery, or dependency sources that the
-# build compiles or copies into the output (cargoDeps, goModules, npmDeps).
-# Store paths that appear only in these are not followed for derivations that
-# are not in the cache.
+# Attributes that only carry build machinery, dependency sources that the
+# build compiles or copies into the output (cargoDeps, goModules, npmDeps), or
+# constraints on the output's references (allowedReferences, outputChecks and
+# the like), which name paths the output may or must not refer to, not paths
+# it refers to. Store paths that appear only in these are not followed for
+# derivations that are not in the cache.
 BUILD_ONLY_ATTRS = frozenset({
+    "allowedReferences",
+    "allowedRequisites",
     "builder",
     "cargoDeps",
     "depsBuildBuild",
     "depsBuildBuildPropagated",
     "depsBuildTarget",
     "depsBuildTargetPropagated",
+    "disallowedReferences",
+    "disallowedRequisites",
     "goModules",
     "nativeBuildInputs",
     "npmDeps",
+    "outputChecks",
     "propagatedNativeBuildInputs",
     "stdenv",
 })
