@@ -2,12 +2,16 @@
 """Find the CVEs affecting a system, or the CVEs an update resolves.
 
 Usage:
-  cves.py [OPTIONS] open DRV
+  cves.py [OPTIONS] open DERIVATIONS_JSON TARGET
   cves.py [OPTIONS] compare OLD_DRV NEW_DRV
 
-`open` prints the CVEs affecting the runtime packages of the system DRV:
+`open` prints the CVEs affecting the runtime packages of TARGET, a key of
+DERIVATIONS_JSON, which is an output of `normalized-derivations`. Each nested
+system of the target gets a report of its own, and its packages are not in
+the target's:
 
-    {"findings": [FINDING, ...], "suppressed": ["CVE-...", ...]}
+    {"findings": [FINDING, ...], "suppressed": ["CVE-...", ...],
+     "nested": {"<label>": {"findings": [...], "suppressed": [...]}}}
 
 `compare` prints the CVEs that changed between two systems:
 
@@ -37,11 +41,13 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import NamedTuple, NewType, Optional, TypedDict
+from typing import NamedTuple, NewType, Optional, TypedDict, Union
 
 import package_diff as pd
+import targets as tg
 
 DEFAULT_MIRROR = "https://nvd-mirror.fsn1.your-objectstorage.com/"
 # Relative to the working directory, which is usually the flake's.
@@ -114,6 +120,11 @@ class Report(NamedTuple):
     suppressed: list[CveId]
 
 
+class TargetReport(NamedTuple):
+    host: Report
+    nested: dict[tg.NestedLabel, Report]
+
+
 class Comparison(NamedTuple):
     resolved: list[Resolution]
     introduced: list[Finding]
@@ -155,6 +166,10 @@ def load_system(drv: str) -> System:
 def runtime_system(drvs: pd.Derivations, closure: set[pd.StorePath]) -> System:
     produced_by = pd.producers(drvs)
     return System(drvs, sorted({produced_by[p] for p in closure if p in produced_by}))
+
+
+def part_system(part: tg.Part) -> System:
+    return runtime_system(part.drvs, part.closure)
 
 
 def patch_cves(system: System) -> PatchCves:
@@ -245,6 +260,12 @@ def scan(system: System, options: VulnixOptions) -> Report:
     return report(run_vulnix(system, options))
 
 
+def scan_target(loaded: tg.LoadedTarget, scan_system: Callable[[System], Report]) -> TargetReport:
+    return TargetReport(scan_system(part_system(loaded.host)),
+                        {label: scan_system(part_system(part))
+                         for label, part in sorted(loaded.nested.items())})
+
+
 def compare_systems(old: System, new: System, options: VulnixOptions) -> Comparison:
     return compare(scan(old, options), scan(new, options),
                    patch_cves(old), patch_cves(new), versions(old))
@@ -296,6 +317,64 @@ def report_json(r: Report) -> dict[str, object]:
     return {"findings": [finding_json(f) for f in r.findings], "suppressed": r.suppressed}
 
 
+def target_report_json(r: TargetReport) -> dict[str, object]:
+    return report_json(r.host) | {"nested": {label: report_json(n)
+                                             for label, n in r.nested.items()}}
+
+
+def parse_target_report(text: str) -> TargetReport:
+    """Parse the output of `cves.py open`; raise ValueError if malformed."""
+    value: pd.Json = json.loads(text)
+    nested = value.get("nested") if isinstance(value, dict) else None
+    if not isinstance(nested, dict):
+        raise ValueError("expected a report with nested reports")
+    return TargetReport(parse_report(value),
+                        {tg.NestedLabel(label): parse_report(n) for label, n in nested.items()})
+
+
+def parse_report(value: pd.Json) -> Report:
+    findings = value.get("findings") if isinstance(value, dict) else None
+    suppressed = value.get("suppressed") if isinstance(value, dict) else None
+    if not isinstance(findings, list) or not isinstance(suppressed, list):
+        raise ValueError("expected a report with findings and suppressed CVEs")
+    ids: list[CveId] = []
+    for cve in suppressed:
+        if not isinstance(cve, str):
+            raise ValueError(f"expected a suppressed CVE, got {cve!r}")
+        ids.append(CveId(cve))
+    return Report([parse_finding(f) for f in findings], ids)
+
+
+def parse_finding(value: pd.Json) -> Finding:
+    """Parse a finding as `finding_json` writes it; raise ValueError if malformed.
+
+    Its severity is ignored, because Finding derives the severity from the score.
+    """
+    if not isinstance(value, dict):
+        raise ValueError(f"expected a finding, got {value!r}")
+    cve, package, version = value.get("cve"), value.get("package"), value.get("version")
+    score, description = value.get("score"), value.get("description")
+    if not isinstance(cve, str) or not isinstance(package, str) \
+            or not isinstance(version, str) or not isinstance(description, str) \
+            or isinstance(score, bool) or not (score is None or isinstance(score, (int, float))):
+        raise ValueError(f"expected a finding, got {value!r}")
+    return Finding(CveId(cve), package, version,
+                   None if score is None else Score(float(score)), description)
+
+
+def open_target(derivations_path: str, target: tg.Target,
+                options: VulnixOptions) -> Union[TargetReport, str]:
+    """The target's report, or an error message."""
+    with open(derivations_path) as f:
+        specs = tg.parse_targets(f.read())
+    if target not in specs:
+        return f"{target}: not in {derivations_path}"
+    loaded = tg.load_target(target, specs[target])
+    if not isinstance(loaded, tg.LoadedTarget):
+        return loaded.message()
+    return scan_target(loaded, lambda system: scan(system, options))
+
+
 def comparison_json(c: Comparison) -> dict[str, object]:
     return {
         "resolved": [finding_json(r.finding) | {"sources": sorted(s.value for s in r.sources)}
@@ -309,7 +388,9 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_vulnix_arguments(parser)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("open").add_argument("drv")
+    open_parser = sub.add_parser("open")
+    open_parser.add_argument("derivations", help="output of normalized-derivations")
+    open_parser.add_argument("target")
     cmp = sub.add_parser("compare")
     cmp.add_argument("old")
     cmp.add_argument("new")
@@ -317,7 +398,10 @@ def main() -> None:
 
     options = vulnix_options(args)
     if args.command == "open":
-        print(json.dumps(report_json(scan(load_system(args.drv), options))))
+        result = open_target(args.derivations, tg.Target(args.target), options)
+        if isinstance(result, str):
+            sys.exit(result)
+        print(json.dumps(target_report_json(result)))
     else:
         print(json.dumps(comparison_json(compare_systems(
             load_system(args.old), load_system(args.new), options))))

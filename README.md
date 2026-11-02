@@ -245,12 +245,16 @@ derivation. [How it works](#comparing-targets) explains why the
 comparison changes settings at all.
 
 ```nix
-{ flake }: {
+{ flake, normalize }: {
   nixos = [ <module> ... ];        # default [ ]
   darwin = [ <module> ... ];       # default [ ]
   homeManager = [ <module> ... ];  # default [ ]
   # Target name -> normalized configuration -> derivation to compare.
   deployed = name: cfg: <derivation>;  # default: cfg.config.system.build.toplevel
+  # Target name -> normalized configuration -> label -> nested system.
+  nested = name: cfg: {               # default: { }
+    <label> = { entry = <derivation>; system = <derivation>; };
+  };
 }
 ```
 
@@ -259,6 +263,11 @@ comparison changes settings at all.
   typo such as `nixoss` can't go unnoticed.
 - `deployed` applies to NixOS and nix-darwin targets, for example to
   compare a deploy-rs profile that wraps the toplevel.
+- `nested` declares [nested systems](#nested-systems).
+- `normalize.nixos` is a module that normalizes a nested NixOS system. See
+  [nested systems](#nested-systems) for how to use it.
+- The file can take only the arguments it uses, for example `{ flake }:`
+  or `{ normalize }:`.
 
 ## Command line
 
@@ -286,18 +295,20 @@ List the open CVEs on `myhost`:
 
 ```sh
 scripts/normalized-derivations myhost > drvs.json
-scripts/cves.py open "$(jq -r .myhost drvs.json)"
+scripts/cves.py open drvs.json myhost
 ```
 
 ### Script reference
 
 ```
 normalized-derivations [--flake REF] [--normalization FILE] [--list] [TARGET...]
-  -> {"<target>": "/nix/store/...drv"}
+  -> {"<target>": {"drv": "/nix/store/...drv",
+                   "nested": {"<label>": {"entry": "/nix/store/...", "drv": "/nix/store/...drv"}}}}
 ```
 
 Evaluates targets for the comparison. `--list` prints the target names.
-Without targets, it evaluates all.
+Without targets, it evaluates all. `nested` lists the target's
+[nested systems](#nested-systems); it is empty for dev shells.
 
 ```
 package_diff.py [--json] OLD_DRV NEW_DRV
@@ -309,17 +320,21 @@ packages whose store path changed without a version change. Without
 `--json`, it prints a table.
 
 ```
-cves.py [--mirror URL] [--whitelist FILE] [--cache-dir DIR] open DRV
-  -> {"findings": [FINDING...], "suppressed": [CVE...]}
+cves.py [--mirror URL] [--whitelist FILE] [--cache-dir DIR] open DERIVATIONS_JSON TARGET
+  -> {"findings": [FINDING...], "suppressed": [CVE...],
+      "nested": {"<label>": {"findings": [FINDING...], "suppressed": [CVE...]}}}
 cves.py [...] compare OLD_DRV NEW_DRV
   -> {"resolved": [FINDING + {"sources": ["nvd"|"patch"]}], "introduced": [FINDING...]}
 
 FINDING = {"cve", "package", "version", "score": float|null, "severity", "description"}
 ```
 
-`open` lists the open CVEs, `compare` the CVEs resolved and introduced
-between two derivations. `suppressed` lists the CVEs the whitelist left
-out. Without `--cache-dir`, vulnix uses its default cache directory.
+`open` lists the open CVEs of `TARGET`. `DERIVATIONS_JSON` is an output
+of `normalized-derivations` that includes `TARGET`. `findings` holds the
+CVEs in the target's own packages, and `nested` holds those of each of its
+[nested systems](#nested-systems), by label. `compare` lists the CVEs resolved and introduced between two
+derivations. `suppressed` lists the CVEs the whitelist left out. Without
+`--cache-dir`, vulnix uses its default cache directory.
 
 ```
 update_report.py affected BEFORE_JSON AFTER_JSON
@@ -331,10 +346,12 @@ update_report.py body --log UPDATE_LOG [--no-cves] [--whitelist F] [--mirror U] 
 ```
 
 `BEFORE_JSON` and `AFTER_JSON` are outputs of `normalized-derivations`.
-Both must have the same targets. Otherwise the script exits with an error
-that names the missing ones, because a missing target must not count as
-a change. `body` writes the [update PR](#update-pr) body: the update log
-without `warning:` lines, then a section per affected target.
+Both must have the same targets, and each target the same nested systems.
+Otherwise the script exits with an error that names the missing ones,
+because a missing target must not count as a change. `body` writes the
+[update PR](#update-pr) body: the update log without `warning:` lines,
+then a section per affected target, with a subsection per nested system
+that changed.
 `--no-cves` leaves out the Security section and doesn't download the NVD
 database. A body
 longer than 60,000 characters is cut and ends with "(truncated)", because
@@ -347,7 +364,8 @@ cve_issue.py REPORTS_DIR PREVIOUS_BODY HEADER BODY_OUT ALERT_OUT
 Writes the [CVE report issue](#cve-report-issue) body to `BODY_OUT`, and
 the comment about new critical or high CVEs to `ALERT_OUT` (empty if
 there are none). `REPORTS_DIR` holds one `cves.py open` output per
-target, named `<target>.json`. `PREVIOUS_BODY` is the issue's current
+target, named `<target>.json`. Nested systems get their own rows and
+sections, named `<target>/<label>`. `PREVIOUS_BODY` is the issue's current
 body, or an empty file.
 
 ## How it works
@@ -366,8 +384,8 @@ options, all with `lib.mkForce`:
 
 | Platform | Settings |
 | --- | --- |
-| NixOS | `system.nixos.versionSuffix = ""`, `system.nixos.revision = null`, `nixpkgs.flake.source = null`, `documentation.nixos.enable = false`, `environment.systemPackages = [ pkgs.w3m-nographics ]` |
-| nix-darwin | `system.darwinVersionSuffix = ""`, `system.darwinRevision = null`, `system.nixpkgsVersionSuffix = ""`, `system.nixpkgsRevision = null`, `nixpkgs.flake.source = null` |
+| NixOS | `system.nixos.versionSuffix = ""`, `system.nixos.revision = null`, `nixpkgs.flake.source = null`, `nix.registry = { }`, `documentation.nixos.enable = false`, `environment.systemPackages = [ pkgs.w3m-nographics ]` |
+| nix-darwin | `system.darwinVersionSuffix = ""`, `system.darwinRevision = null`, `system.nixpkgsVersionSuffix = ""`, `system.nixpkgsRevision = null`, `nixpkgs.flake.source = null`, `nix.registry = { }` |
 | home-manager (when the module is present) | `manual.manpages.enable = false` |
 
 Why the NixOS documentation settings:
@@ -380,6 +398,10 @@ Why the NixOS documentation settings:
   browser `w3m-nographics`, with its dependency `gpm`. Adding
   `w3m-nographics` back keeps both in the comparison, so their updates
   still count.
+
+A flake registry entry, such as `nix.registry.nixpkgs.flake = inputs.nixpkgs`,
+writes the flake's source path into `/etc/nix/registry.json`, so it changes
+with every revision of that flake.
 
 The nix-darwin manual needs no such setting, because its derivation
 doesn't change between nixpkgs revisions. Dev shells are compared without
@@ -403,9 +425,10 @@ look up the references of each store path:
   outputs of its derivation's inputs whose store path appears in the
   derivation's attributes, as a stand-in. They skip attributes that only
   carry build tools, such as `nativeBuildInputs`, `stdenv` and `builder`,
-  and dependency sources such as `cargoDeps`, `goModules` and `npmDeps`.
-  They also skip programs that a `buildCommand` runs, such as the `perl`
-  that runs `buildEnv`'s builder.
+  dependency sources such as `cargoDeps`, `goModules` and `npmDeps`, and
+  constraints on the output's references, such as `disallowedReferences`
+  and `outputChecks`. They also skip programs that a `buildCommand` runs,
+  such as the `perl` that runs `buildEnv`'s builder.
 
 The stand-in is an estimate, and it can be wrong in both directions:
 
@@ -416,6 +439,67 @@ The stand-in is an estimate, and it can be wrong in both directions:
 
 A package counts as rebuilt when its store path changes and its version
 doesn't, for example because a dependency changed.
+
+### Nested systems
+
+A machine can contain a whole other system, for example a VM image that
+nix-darwin builds for a Linux builder. The VM's packages are in the
+machine's closure, but they aren't the machine's packages: a CVE in the
+VM's openssh is not a CVE in the machine's. Declare such a system as a
+nested system in the [normalization file](#normalization-file), and the
+tools report it in its own section, `<target>/<label>`, instead of mixing
+its packages into the target's.
+
+A nested system has two derivations:
+
+- `entry`, where the target's walk stops: the store path through which the
+  target contains the nested system, such as the VM's disk image. The entry
+  itself stays in the target's closure.
+- `system`, the nested system itself, such as the VM's NixOS toplevel. Its
+  closure is walked on its own. Walking from the disk image instead would
+  also count the tools that build the image.
+
+The tools fail, naming the target and label, unless the nested system is
+part of the target through its entry and only through it:
+
+- the target's closure must contain the entry;
+- the entry's closure must contain the nested system;
+- the target's closure, with the walk stopped at the entries, must not
+  contain the nested system.
+
+The tools normalize each target, but not the systems nested in it: a
+nested system is built from its own configuration, inside the target's,
+where the tools can't reach. nixpkgs stamps its revision into every NixOS
+system, so without normalization a nested NixOS system looks changed after
+every nixpkgs update, even when none of its packages changed.
+
+To normalize a nested NixOS system, add the module `normalize.nixos` to it
+through whatever option the target offers for the nested system's modules.
+The module requires the nested system not to install the NixOS manual,
+and fails the evaluation otherwise: set `documentation.nixos.enable` or
+`documentation.enable` to false in it. The manual changes with most
+nixpkgs revisions. On a target, the tools turn the manual off and keep
+the packages that come with it in the comparison, but in a nested system
+they can't tell whether the manual was on. Builder VMs, such as
+nix-darwin's `nix.linux-builder` and
+[Virby](https://github.com/quinneden/virby-nix-darwin), turn
+documentation off already.
+
+For example, for [Virby](https://github.com/quinneden/virby-nix-darwin)
+on `myhost`:
+
+```nix
+{ normalize }:
+let
+  image = cfg: cfg.config.system.build.virbyImage;
+in
+{
+  darwin = [{ services.virby.extraConfig = normalize.nixos; }];
+  nested = name: cfg: if name == "myhost" then {
+    builder = { entry = image cfg; system = (image cfg).passthru.config.system.build.toplevel; };
+  } else { };
+}
+```
 
 ### Matching CVEs
 

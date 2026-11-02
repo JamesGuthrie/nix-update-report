@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import tempfile
 import unittest
 from typing import Optional
 
 import cves
+import targets as tg
 from cves import CveId, Finding, Report, Resolution, Score, Severity, Source, VulnixEntry
 from package_diff import Json
 from test_package_diff import Graph
+from test_targets import VM, Machine
 
 A = CveId("CVE-2026-0001")
 B = CveId("CVE-2026-0002")
@@ -131,6 +134,72 @@ class PatchCvesTest(unittest.TestCase):
     def test_no_cve_patches(self) -> None:
         self.assertEqual(cves.patch_cves(self.system(env={"patches": "/nix/store/x-fix.patch"})),
                          {})
+
+
+class TargetReportTest(unittest.TestCase):
+    def loaded(self) -> tg.LoadedTarget:
+        m = Machine()
+        loaded = m.load(m.spec(m.image))
+        assert isinstance(loaded, tg.LoadedTarget)
+        return loaded
+
+    @staticmethod
+    def scan_names(system: cves.System) -> Report:
+        """A report with one unscored finding per runtime derivation, named after it."""
+        return Report([Finding(CveId(f"CVE-2026-{i:04}"),
+                               name.split("-", 1)[1].removesuffix(".drv"), "", None, "")
+                       for i, name in enumerate(system.runtime)], [])
+
+    def test_nested_packages_are_only_in_the_nested_report(self) -> None:
+        r = cves.scan_target(self.loaded(), self.scan_names)
+
+        host = {f.pname for f in r.host.findings}
+        nested = {f.pname for f in r.nested[VM].findings}
+        self.assertIn("curl-8.22.0", host)
+        self.assertNotIn("openssh-10.3p1", host)
+        self.assertIn("openssh-10.3p1", nested)
+
+    def test_json_lists_nested_reports_beside_the_host_report(self) -> None:
+        empty = Report([], [])
+        r = cves.TargetReport(Report([finding(A)], [B]), {VM: empty})
+
+        self.assertEqual(cves.target_report_json(r), {
+            "findings": [cves.finding_json(finding(A))],
+            "suppressed": [B],
+            "nested": {"vm": {"findings": [], "suppressed": []}},
+        })
+
+    def test_json_without_nested_systems(self) -> None:
+        r = cves.TargetReport(Report([], []), {})
+
+        self.assertEqual(cves.target_report_json(r),
+                         {"findings": [], "suppressed": [], "nested": {}})
+
+    def test_json_parses_back_to_the_report(self) -> None:
+        r = cves.TargetReport(Report([finding(A), finding(C)], [B]),
+                              {VM: Report([finding(B, "openssh")], [])})
+
+        self.assertEqual(cves.parse_target_report(json.dumps(cves.target_report_json(r))), r)
+
+    def test_malformed_json_fails(self) -> None:
+        good = {"cve": A, "package": "curl", "version": "8.20.0", "score": 9.8,
+                "severity": "critical", "description": "a"}
+        for value in [[], {"findings": [], "suppressed": []},
+                      {"findings": [good], "suppressed": [1], "nested": {}},
+                      {"findings": [good | {"score": "9.8"}], "suppressed": [], "nested": {}},
+                      {"findings": [good | {"score": True}], "suppressed": [], "nested": {}},
+                      {"findings": [], "suppressed": [], "nested": {"vm": {}}}]:
+            with self.subTest(value), self.assertRaises(ValueError):
+                cves.parse_target_report(json.dumps(value))
+
+    def test_unknown_target(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+            f.write('{"host": {"drv": "/nix/store/a-host.drv", "nested": {}}}')
+            f.flush()
+            options = cves.VulnixOptions(cves.DEFAULT_MIRROR, None, None)
+
+            self.assertEqual(cves.open_target(f.name, tg.Target("other"), options),
+                             f"other: not in {f.name}")
 
 
 class VulnixOptionsTest(unittest.TestCase):

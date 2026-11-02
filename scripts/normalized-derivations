@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Prints the normalized derivations of the flake's machines and dev shells as a
-# JSON object, e.g. {"router": "/nix/store/...-nixos-system-router-26.05.drv"}.
-# See README.md, "Comparing targets".
+# Prints the normalized derivations of the flake's machines and dev shells, and
+# of their nested systems, as a JSON object, e.g.
+# {"router": {"drv": "/nix/store/...-nixos-system-router-26.05.drv", "nested": {}}}.
+# See README.md, "Comparing targets" and "Nested systems".
 #
 # Usage: normalized-derivations [--flake REF] [--normalization FILE] [--list] [TARGET...]
 #

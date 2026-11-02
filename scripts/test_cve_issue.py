@@ -1,27 +1,39 @@
 from __future__ import annotations
 
+import json
 import unittest
 from typing import Optional
 
 import cve_issue as ci
-from cve_issue import FindingJson, ReportJson
+import cves
+from cves import Finding, Report, Score, Severity
+from package_diff import Json
 
 
-def finding(cve: str, package: str = "curl", severity: str = "high",
-            score: Optional[float] = 7.5) -> FindingJson:
+def finding_json(cve: str, package: str = "curl", score: Optional[float] = 7.5) -> Json:
+    """A finding as `cves.py open` writes it."""
+    severity = Severity.of(None if score is None else Score(score))
     return {"cve": cve, "package": package, "version": "8.22.0", "score": score,
-            "severity": severity, "description": ""}
+            "severity": severity.value, "description": ""}
 
 
-def report(*findings: FindingJson, suppressed: int = 0) -> ReportJson:
+def report_json(*findings: Json, suppressed: int = 0) -> Json:
     return {"findings": list(findings),
             "suppressed": [f"CVE-2026-9{i:03}" for i in range(suppressed)]}
 
 
+def finding(cve: str, package: str = "curl", score: Optional[float] = 7.5) -> Finding:
+    return cves.parse_finding(finding_json(cve, package, score))
+
+
+def report(*findings: Json, suppressed: int = 0) -> Report:
+    return cves.parse_report(report_json(*findings, suppressed=suppressed))
+
+
 REPORTS = {
-    "router": report(finding("CVE-2026-0001", severity="critical", score=9.8),
-                     finding("CVE-2026-0002"),
-                     finding("CVE-2026-0003", "vim", "medium", 5.5),
+    "router": report(finding_json("CVE-2026-0001", score=9.8),
+                     finding_json("CVE-2026-0002"),
+                     finding_json("CVE-2026-0003", "vim", 5.5),
                      suppressed=2),
     "titan": report(),
 }
@@ -66,6 +78,34 @@ class AlertTest(unittest.TestCase):
         self.assertEqual(ci.alert({}), "")
 
 
+class NestedTest(unittest.TestCase):
+    TARGETS = {name: cves.parse_target_report(json.dumps(value)) for name, value in {
+        "midnight": {"findings": [finding_json("CVE-2026-0001")], "suppressed": [],
+                     "nested": {"vm": report_json(finding_json("CVE-2026-0002", "openssh"))}},
+        "router": {"findings": [], "suppressed": [], "nested": {}},
+    }.items()}
+
+    def test_nested_systems_follow_their_target(self) -> None:
+        reports = ci.flatten(self.TARGETS)
+
+        self.assertEqual(list(reports), ["midnight", "midnight/vm", "router"])
+        self.assertEqual(reports["midnight"], report(finding_json("CVE-2026-0001")))
+        self.assertEqual(reports["midnight/vm"],
+                         report(finding_json("CVE-2026-0002", "openssh")))
+
+    def test_summary_and_sections(self) -> None:
+        reports = ci.flatten(self.TARGETS)
+
+        self.assertIn("| midnight/vm | 0 | 1 | 0 | 0 | 0 | 0 |", ci.summary(reports))
+        self.assertIn("## midnight/vm", ci.body(reports, "header").splitlines())
+
+    def test_alerts_name_the_nested_system(self) -> None:
+        previous = {"midnight": ["curl CVE-2026-0001"]}
+
+        self.assertEqual(ci.new_alerts(previous, ci.state(ci.flatten(self.TARGETS))),
+                         {"midnight/vm": ["openssh CVE-2026-0002"]})
+
+
 class BodyTest(unittest.TestCase):
     def test_summary(self) -> None:
         self.assertEqual(ci.summary(REPORTS), [
@@ -99,13 +139,13 @@ class BodyTest(unittest.TestCase):
                          ["## titan", "", "No open CVEs.", ""])
 
     def test_unlinked_severities_only_count(self) -> None:
-        lines = ci.machine_section("router", REPORTS["router"], {"critical", "high"})
+        lines = ci.machine_section("router", REPORTS["router"], {Severity.CRITICAL, Severity.HIGH})
 
         self.assertIn("| vim | 8.22.0 | 1 |", lines)
 
     def test_long_body_lists_fewer_severities(self) -> None:
-        many = report(*[finding(f"CVE-2026-{i:04}", f"pkg{i}", "low", 2.0) for i in range(2000)],
-                      finding("CVE-2026-9999", severity="critical", score=9.8))
+        many = report(*[finding_json(f"CVE-2026-{i:04}", f"pkg{i}", 2.0) for i in range(2000)],
+                      finding_json("CVE-2026-9999", score=9.8))
 
         text = ci.body({"router": many}, "header")
 

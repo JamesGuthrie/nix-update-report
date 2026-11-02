@@ -212,16 +212,20 @@ def producers(drvs: Derivations) -> dict[StorePath, DrvName]:
 
 
 def runtime_closure(
-    drvs: Derivations, root: StorePath, lookup: Lookup, workers: int = 32,
+    drvs: Derivations, root: StorePath, lookup: Lookup,
+    stop: frozenset[StorePath] = frozenset(), workers: int = 32,
 ) -> set[StorePath]:
-    """Approximate the runtime closure of the output path `root`."""
+    """Approximate the runtime closure of the output path `root`.
+
+    Paths in `stop` are in the closure, but their references are not followed.
+    """
     produced_by = producers(drvs)
     seen: set[StorePath] = set()
     frontier = {root}
     with ThreadPoolExecutor(workers) as pool:
         while frontier:
             seen |= frontier
-            batch = sorted(frontier)
+            batch = sorted(frontier - stop)
             frontier = set()
             for path, refs in zip(batch, pool.map(lookup, batch)):
                 if refs is None:

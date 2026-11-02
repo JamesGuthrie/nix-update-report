@@ -205,6 +205,29 @@ class RuntimeClosureTest(unittest.TestCase):
 
         self.assertEqual(closure, {g.out(conf), g.out(nix)})
 
+    def test_stop_paths_are_kept_but_not_followed(self) -> None:
+        g = Graph()
+        vm = g.add("nixos-system-vm")
+        image = g.add("disk-image", inputs=[vm], env={"x": f"/nix/store/{g.out(vm)}"})
+        host = g.add("host", inputs=[image], env={"x": f"/nix/store/{g.out(image)}"})
+
+        closure = pd.runtime_closure(g.drvs, g.out(host), lookup_from({}),
+                                     stop=frozenset({g.out(image)}))
+
+        self.assertEqual(closure, {g.out(host), g.out(image)})
+
+    def test_paths_below_a_stop_path_reachable_another_way_are_kept(self) -> None:
+        g = Graph()
+        glibc = g.add("glibc-2.42")
+        image = g.add("disk-image", inputs=[glibc], env={"x": f"/nix/store/{g.out(glibc)}"})
+        host = g.add("host", inputs=[image, glibc], env={
+            "x": f"/nix/store/{g.out(image)} /nix/store/{g.out(glibc)}"})
+
+        closure = pd.runtime_closure(g.drvs, g.out(host), lookup_from({g.out(glibc): []}),
+                                     stop=frozenset({g.out(image)}))
+
+        self.assertEqual(closure, {g.out(host), g.out(image), g.out(glibc)})
+
     def test_walk_returns_to_cache_references_below_uncached_paths(self) -> None:
         g = Graph()
         glibc = g.add("glibc-2.42")
